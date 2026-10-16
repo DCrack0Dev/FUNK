@@ -3,13 +3,14 @@ package com.alpacatalk.trading.data
 import android.content.Context
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.security.MessageDigest
 import java.util.Locale
 
-/** Durable, mode-scoped journal. The legacy unsuffixed journal is migrated into Paper only. */
-class TradeJournalStore(context: Context, accountMode: String = "paper") {
+/** Durable journal scoped to one broker mode and one broker account. */
+class TradeJournalStore(context: Context, accountMode: String = "paper", accountKey: String = "unbound") {
     private val mode = accountMode.lowercase(Locale.US).let { if (it.contains("live")) "live" else "paper" }
-    private val journalFile = File(context.filesDir, "fin_killer_trade_journal_$mode.json")
-    private val legacyFile = File(context.filesDir, LEGACY_FILE_NAME)
+    private val scope = accountKey.takeIf { it.isNotBlank() && it != "unbound" }?.let(::scopeHash)
+    private val journalFile = scope?.let { File(context.filesDir, "fin_killer_trade_journal_${mode}_$it.json") }
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
@@ -19,26 +20,22 @@ class TradeJournalStore(context: Context, accountMode: String = "paper") {
     var lastError: String? = null
         private set
 
-    val path: String get() = journalFile.absolutePath
+    val path: String get() = journalFile?.absolutePath ?: "unbound account journal"
 
     fun load(): JournalState {
-        if (journalFile.exists()) return decode(journalFile)
-        if (mode == "paper" && legacyFile.exists()) {
-            val old = decode(legacyFile)
-            val paperOnly = TradeJournalMigration.legacyToPaper(old)
-            save(paperOnly)
-            return paperOnly
-        }
+        if (journalFile?.exists() == true) return decode(journalFile!!)
+        // Never expose an account's journal before an authenticated account identity is known.
         return JournalState(version = CURRENT_VERSION)
     }
 
     fun save(state: JournalState): JournalState {
         return runCatching {
             val modeScoped = state.copy(version = CURRENT_VERSION)
-            val temporary = File(journalFile.parentFile, "${journalFile.name}.tmp")
+            val target = journalFile ?: return@runCatching state
+            val temporary = File(target.parentFile, "${target.name}.tmp")
             temporary.writeText(json.encodeToString(JournalState.serializer(), modeScoped))
-            if (journalFile.exists() && !journalFile.delete()) throw IllegalStateException("previous journal file could not be replaced")
-            if (!temporary.renameTo(journalFile)) throw IllegalStateException("journal file could not be renamed into place")
+            if (target.exists() && !target.delete()) throw IllegalStateException("previous journal file could not be replaced")
+            if (!temporary.renameTo(target)) throw IllegalStateException("journal file could not be renamed into place")
             lastError = null
             modeScoped
         }.getOrElse { error ->
@@ -61,8 +58,12 @@ class TradeJournalStore(context: Context, accountMode: String = "paper") {
     }.getOrElse { JournalState(version = CURRENT_VERSION) }
 
     private companion object {
-        const val LEGACY_FILE_NAME = "fin_killer_trade_journal.json"
         const val CURRENT_VERSION = 2
+
+        fun scopeHash(accountKey: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(accountKey.trim().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(24)
     }
 }
 

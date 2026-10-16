@@ -209,11 +209,11 @@ private fun JournalStatsCard(journal: JournalSnapshot) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("Record", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("Closed trades: ${stats.totalTrades} · Wins: ${stats.wins} · Losses: ${stats.losses} · Breakeven: ${stats.breakevens}")
-            Text("Win rate: ${stats.winRatePct}% · Net: ${TradeMath.formatPips(stats.netPips)} pips · Expectancy: ${TradeMath.formatPips(stats.expectancyPips)} pips per trade")
-            Text("Average win: ${stats.averageWinPips} pips · Average loss: ${stats.averageLossPips} pips · Profit factor: ${stats.profitFactor}")
+            Text("${stats.totalTrades} closed · ${stats.wins} wins · ${stats.losses} losses · ${stats.breakevens} breakeven")
+            Text("Win rate ${stats.winRatePct}% · Net ${TradeMath.formatPips(stats.netPips)} pips · Expectancy ${TradeMath.formatPips(stats.expectancyPips)} pips/trade")
+            Text("Average win ${stats.averageWinPips} pips · Average loss ${stats.averageLossPips} pips · Profit factor ${stats.profitFactor}")
             Text("High-rated losses remembered: ${stats.highRatedLosses}", fontWeight = FontWeight.Bold)
-            Text("Setups preferred: ${stats.preferredSetups} · cautioned or on probation: ${stats.cautionedSetups} · blocked: ${stats.blockedSetups}")
+            Text("Preferred ${stats.preferredSetups} · cautioned/probation ${stats.cautionedSetups} · blocked ${stats.blockedSetups}")
             stats.bestSetupKey?.let { Text("Best remembered setup: ${TradeJournalEngine.displayKey(it)}", style = MaterialTheme.typography.bodySmall) }
             stats.worstSetupKey?.let { Text("Worst remembered setup: ${TradeJournalEngine.displayKey(it)}", style = MaterialTheme.typography.bodySmall) }
             stats.bestSymbol?.let { Text("Strongest market: $it · Weakest market: ${stats.worstSymbol ?: "none"}", style = MaterialTheme.typography.bodySmall) }
@@ -304,11 +304,11 @@ private fun ClosedTradesCard(
                 val rating = ratingsByTrade[trade.tradeId]
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("${trade.symbol} ${TradeMath.sideLabel(trade.side)} · ${trade.outcome.name} · ${TradeMath.formatPips(trade.resultPips)} ${TradeMath.pipLabel(trade.symbol)}", fontWeight = FontWeight.Bold)
-                        Text("${timestamp(trade.closedAtEpochMs)} · ${trade.accountMode} · ${trade.setupLabel}", style = MaterialTheme.typography.bodySmall)
-                        Text("Entry ${TradeMath.formatPrice(trade.entryPrice)} · stop ${TradeMath.formatPrice(trade.stopPrice)} (${trade.stopPips} ${TradeMath.pipLabel(trade.symbol)}) · target ${TradeMath.formatPrice(trade.targetPrice)} (${trade.targetPips} ${TradeMath.pipLabel(trade.symbol)}) · exit ${TradeMath.formatPrice(trade.exitPrice)}", style = MaterialTheme.typography.bodySmall)
-                        Text("R:R ${trade.riskReward} · size ${trade.quantity} · P/L ${TradeMath.formatPnl(trade.realizedPnl)} · source ${trade.source.name}", style = MaterialTheme.typography.bodySmall)
-                        Text("App rating at entry: ${trade.appRatingAtEntry}/100 · signal ${trade.signalScoreAtEntry}/100 · directive then ${trade.directiveAtEntry.name}", style = MaterialTheme.typography.bodySmall)
+                        val pnlPct = if (trade.entryPrice > 0.0 && trade.quantity > 0.0) trade.realizedPnl / (trade.entryPrice * trade.quantity) * 100.0 else 0.0
+                        Text("${trade.symbol} ${TradeMath.sideLabel(trade.side)} · ${trade.outcome.name}", fontWeight = FontWeight.Bold)
+                        Text("Price ${TradeMath.formatPrice(trade.entryPrice)} → ${TradeMath.formatPrice(trade.exitPrice)} · lots ${TradeMath.formatPrice(trade.quantity)} · SL ${TradeMath.formatPrice(trade.stopPrice)} · TP ${TradeMath.formatPrice(trade.targetPrice)}", style = MaterialTheme.typography.bodySmall)
+                        Text("P/L ${TradeMath.formatPnl(trade.realizedPnl)} USD · PnL ${"%+.2f".format(Locale.US, pnlPct)}% · ${TradeMath.formatPips(trade.resultPips)} ${TradeMath.pipLabel(trade.symbol)} · ${timestamp(trade.closedAtEpochMs)}", style = MaterialTheme.typography.bodySmall)
+                        Text("Setup rating ${trade.appRatingAtEntry}/100 · ${trade.setupLabel}", style = MaterialTheme.typography.bodySmall)
                         rating?.let {
                             Text("Setup rating ${it.ratingBefore}/100 → ${it.ratingAfter}/100 (${if (it.delta > 0) "+" else ""}${it.delta}); now ${it.directiveAfter.name}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
                         }

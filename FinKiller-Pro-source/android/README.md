@@ -24,6 +24,13 @@ The release build is unsigned unless release-signing settings are supplied in a 
 - Uncheck the remember option to use credentials only for the current session. Disconnect to clear the active broker credential fields from the ViewModel.
 - **Screenshots and screen recording are not blocked** by this app. Avoid capturing or sharing the credential-entry screen, account identifiers, or other sensitive account data.
 - Cleartext network traffic is disabled in the Android network-security configuration. This does not replace broker-side key management or device security.
+- Journal storage is isolated by broker, Paper/Live mode, and authenticated broker account ID. Account IDs are hashed before being used in local filenames, and no account journal is loaded before authentication establishes the account identity.
+
+## Journal exports
+
+- The in-app journal and PDF export use a compact trade summary: entry/exit price, lots, stop-loss, take-profit, realised P/L, PnL percentage, and result pips.
+- PnL percentage is calculated against entry notional (`realised P/L ÷ entry price ÷ lots`).
+- CSV export remains available when the full journal and setup-memory fields are needed.
 
 ## Scanner and execution notes
 

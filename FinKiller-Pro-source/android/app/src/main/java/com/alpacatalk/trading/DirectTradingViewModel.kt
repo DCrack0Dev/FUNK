@@ -324,8 +324,8 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
     private var lastOrderSymbol: String? = null
     private var lastOrderAtMs: Long = 0L
 
-    private fun switchJournalMode(mode: String) {
-        journalStore = TradeJournalStore(appContext, mode)
+    private fun switchJournalScope(mode: String, accountKey: String) {
+        journalStore = TradeJournalStore(appContext, mode, accountKey)
         journalState = journalStore.load()
         _state.update { it.copy(journal = journalStore.snapshot(journalState), journalNotice = journalStore.lastError) }
     }
@@ -361,10 +361,12 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
             }
             try {
                 val environment = DirectEnvironment.detect(key, secret)
-                switchJournalMode(if (environment == DirectEnvironment.PAPER) "paper" else "live")
                 apiKey = key
                 apiSecret = secret
                 val account = environment.account(key, secret)
+                val accountId = account["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalStateException("Alpaca did not return an account ID; journal isolation cannot be established.")
+                switchJournalScope(if (environment == DirectEnvironment.PAPER) "paper" else "live", "alpaca:${environment.name}:$accountId")
                 val positions = environment.positions(key, secret)
                 val pendingOrders = environment.openOrders(key, secret)
                 val closedTrades = runCatching {
@@ -431,10 +433,10 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
         val token = oandaToken ?: return
         viewModelScope.launch {
             try {
-                switchJournalMode(if (environment == OandaEnvironment.PRACTICE) "paper" else "live")
                 val summary = environment.summary(token, accountId)
                 val eligibility = environment.xauUsdEligibility(token, accountId)
                 val quote = environment.pricing(token, accountId)
+                switchJournalScope(if (environment.name.contains("LIVE", ignoreCase = true)) "live" else "paper", "oanda:${environment.name}:$accountId")
                 _state.update { it.copy(oandaEnvironment = environment, oandaSummary = summary, oandaQuote = quote, oandaEligibility = eligibility, oandaAccounts = listOf(buildJsonObject { put("id", accountId) }), info = "Connected directly to ${environment.label}; XAU_USD checked.", terminal = appendActivity(it, listOf("OANDA READY" to "account=$accountId; $eligibility"))) }
             } catch (error: Exception) { _state.update { it.copy(error = error.message ?: "OANDA account selection failed.") } }
         }
@@ -492,9 +494,9 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
         val token = ctraderToken ?: return
         viewModelScope.launch {
             try {
-                switchJournalMode(if (ctraderLive) "live" else "paper")
                 val authorized = DirectCtraderClient.authorizeAccount(clientId, clientSecret, token, id, ctraderLive)
                 if (!authorized) throw IllegalStateException("cTrader rejected account authorization.")
+                switchJournalScope(if (ctraderLive) "live" else "paper", "ctrader:${if (ctraderLive) "live" else "demo"}:$id")
                 _state.update { it.copy(ctraderConnected = true, info = "cTrader account $id authorized.", terminal = appendActivity(it, listOf("CTRADER READY" to "Authorized cTrader trading account $id."))) }
             } catch (error: Exception) { _state.update { it.copy(error = error.message ?: "cTrader account authorization failed.") } }
         }
