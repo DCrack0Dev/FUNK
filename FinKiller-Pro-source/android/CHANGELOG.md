@@ -1,5 +1,13 @@
 # Fin Killer Pro source audit — implementation changelog
 
+## Background scanner lifecycle and setup-result fix (16 October 2026)
+
+- Fixed foreground-service startup ordering so the monitor loop is started from `onStartCommand` after the enabled state and requested action are known; duplicate starts are ignored safely.
+- Added explicit handling for start, stop, and notification confirmation actions, including sticky recovery when Android recreates the service.
+- Scanner batches now preserve success/failure information. Failed API batches are no longer converted into empty results that look like a completed scan with no setups; partial and all-batch failures are surfaced and retried.
+- Account-journal reconciliation is now best-effort for scanning. A slow or unavailable order-history endpoint cannot prevent fresh market snapshots and setup generation; journal state is still used whenever it is available.
+- Verified with `testDebugUnitTest assembleDebug`: Android unit tests passed and the debug APK assembled successfully.
+
 ## Journal export request-code workaround (16 October 2026)
 
 - Replaced the Compose `rememberLauncherForActivityResult(CreateDocument)` path with a direct Android document intent handled by `MainActivity`.

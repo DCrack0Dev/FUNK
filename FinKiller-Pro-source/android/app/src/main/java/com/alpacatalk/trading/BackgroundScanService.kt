@@ -8,6 +8,7 @@ import com.alpacatalk.trading.data.BrokerOrderMapper
 import com.alpacatalk.trading.data.CredentialVault
 import com.alpacatalk.trading.data.ClosedTradeReconciler
 import com.alpacatalk.trading.data.DirectEnvironment
+import com.alpacatalk.trading.data.JournalSnapshot
 import com.alpacatalk.trading.data.JournalState
 import com.alpacatalk.trading.data.OpenStopRiskCalculator
 import com.alpacatalk.trading.data.NotionalExposurePolicy
@@ -31,6 +32,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.JsonObject
@@ -45,7 +47,14 @@ import kotlinx.serialization.json.jsonPrimitive
 class BackgroundScanService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var monitorPrefs: android.content.SharedPreferences
+    private var monitorJob: Job? = null
     private var lastAlertSignature: String? = null
+
+    private data class ScanSweep(
+        val snapshots: List<com.alpacatalk.trading.data.MarketSnapshot>,
+        val scannedCount: Int,
+        val failedBatchCount: Int,
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -56,19 +65,36 @@ class BackgroundScanService : Service() {
             return
         }
         startForeground(ScanAlertNotifications.MONITOR_NOTIFICATION_ID, notification)
-        scope.launch { monitorLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_CONFIRM_ALL) {
-            scope.launch { submitAllQualifyingOrders() }
-            return START_STICKY
+        when (intent?.action) {
+            ACTION_CONFIRM_ALL -> {
+                ensureMonitorLoop()
+                scope.launch { submitAllQualifyingOrders() }
+                return START_STICKY
+            }
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_START -> {
+                // The caller persists this flag before starting the service. Keeping the
+                // explicit start action here makes direct service starts deterministic too.
+                monitorPrefs.edit().putBoolean(KEY_ENABLED, true).commit()
+            }
         }
-        if (intent?.action == ACTION_STOP || !monitorPrefs.getBoolean(KEY_ENABLED, false)) {
+        if (!monitorPrefs.getBoolean(KEY_ENABLED, false)) {
             stopSelf()
             return START_NOT_STICKY
         }
+        ensureMonitorLoop()
         return START_STICKY
+    }
+
+    private fun ensureMonitorLoop() {
+        if (monitorJob?.isActive == true) return
+        monitorJob = scope.launch { monitorLoop() }
     }
 
     private suspend fun monitorLoop() {
@@ -105,9 +131,13 @@ class BackgroundScanService : Service() {
             else -> DirectEnvironment.PAPER
         }
         val account = environment.account(key, secret)
-        val journalStore = accountJournal(environment, account)
-        val journalState = reconcileJournal(environment, key, secret, journalStore)
-        val journal = journalStore.snapshot(journalState)
+        // Journal replay is useful for eligibility, but it must not prevent the market
+        // scanner from producing fresh setups when the broker history endpoint is slow or
+        // temporarily unavailable.
+        val journal = runCatching {
+            val journalStore = accountJournal(environment, account)
+            journalStore.snapshot(reconcileJournal(environment, key, secret, journalStore))
+        }.getOrElse { JournalSnapshot.EMPTY }
         val positions = environment.positions(key, secret)
         val openOrders = environment.openOrders(key, secret)
         val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
@@ -121,22 +151,25 @@ class BackgroundScanService : Service() {
             throw IllegalStateException("open downside risk has reached the configured cap")
         }
 
-        val snapshots = scanSnapshots(environment, key, secret)
-        val qualifying = snapshots.filter {
+        val sweep = scanSnapshots(environment, key, secret)
+        if (sweep.snapshots.isEmpty() && sweep.failedBatchCount > 0) {
+            throw IllegalStateException("all ${sweep.failedBatchCount} scan batch(es) failed; no setup result was produced")
+        }
+        val qualifying = sweep.snapshots.filter {
             TradeEligibilityRules.evaluate(it, environment, journal, 72).eligible
         }
         if (qualifying.isEmpty()) {
-            return "Monitoring ${ScannerBaskets.allSymbols.size} markets · no qualifying setup · next scan in 60s"
+            return "Monitoring ${sweep.scannedCount}/${ScannerBaskets.allSymbols.size} markets · no qualifying setup${if (sweep.failedBatchCount > 0) " · ${sweep.failedBatchCount} batch(es) failed; retrying" else ""} · next scan in 60s"
         }
         val signature = qualifying.joinToString("|") { "${it.symbol}:${it.direction}:${it.score}:${"%.2f".format(java.util.Locale.US, it.rewardRisk ?: 0.0)}" }
         if (signature != lastAlertSignature) {
             val details = qualifying.take(12).map {
                 "${it.symbol} · ${it.direction?.label ?: "NO SIDE"} · ${it.score}/100 · R:R 1:${"%.2f".format(java.util.Locale.US, it.rewardRisk ?: 0.0)}"
             }
-            ScanAlertNotifications.showQualifyingSetups(this, details, ScannerBaskets.allSymbols.size, qualifying.size, includeSubmitAllAction = true)
+            ScanAlertNotifications.showQualifyingSetups(this, details, sweep.scannedCount, qualifying.size, includeSubmitAllAction = true)
             lastAlertSignature = signature
         }
-        return "Monitoring ${ScannerBaskets.allSymbols.size} markets · ${qualifying.size} qualifying setup(s) · notification ${if (signature == lastAlertSignature) "updated when changed" else "sent"}"
+        return "Monitoring ${sweep.scannedCount}/${ScannerBaskets.allSymbols.size} markets · ${qualifying.size} qualifying setup(s)${if (sweep.failedBatchCount > 0) " · ${sweep.failedBatchCount} batch(es) failed; retrying" else ""} · notification updated when changed"
     }
 
     private suspend fun submitAllQualifyingOrders() {
@@ -151,9 +184,9 @@ class BackgroundScanService : Service() {
                 throw IllegalStateException("regular U.S. equity market is closed")
             }
             val account = environment.account(key, secret)
-            val journalStore = accountJournal(environment, account)
-            var journalState = reconcileJournal(environment, key, secret, journalStore)
-            var journal = journalStore.snapshot(journalState)
+            val journalStore = runCatching { accountJournal(environment, account) }.getOrNull()
+            var journalState = journalStore?.let { store -> runCatching { reconcileJournal(environment, key, secret, store) }.getOrNull() }
+            var journal = if (journalStore != null && journalState != null) journalStore.snapshot(journalState!!) else JournalSnapshot.EMPTY
             val positions = environment.positions(key, secret)
             val openOrders = environment.openOrders(key, secret)
             val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
@@ -163,7 +196,7 @@ class BackgroundScanService : Service() {
             if (!risk.isFresh() || risk.capReached) throw IllegalStateException(risk.issue ?: "stop-risk verification failed or cap reached")
             val equity = account.text("equity")?.toDoubleOrNull()?.takeIf { it > 0.0 }
                 ?: throw IllegalStateException("verified account equity unavailable")
-            val snapshots = scanSnapshots(environment, key, secret)
+            val snapshots = scanSnapshots(environment, key, secret).snapshots
             val qualifying = snapshots.filter { TradeEligibilityRules.evaluate(it, environment, journal, 72).eligible }
             if (qualifying.isEmpty()) {
                 ScanAlertNotifications.showActionResult(this, "No orders submitted", listOf("No setups still pass every gate after fresh revalidation."))
@@ -209,9 +242,11 @@ class BackgroundScanService : Service() {
                         brokerOrderId = submission.order["id"]?.jsonPrimitive?.contentOrNull,
                         notes = "Submitted by the background monitor; setup memory was loaded from the account journal.",
                     )
-                    journalState = TradeJournalEngine.recordTickets(journalState, listOf(ticket))
-                    journalState = journalStore.save(journalState)
-                    journal = journalStore.snapshot(journalState)
+                    if (journalStore != null && journalState != null) {
+                        journalState = TradeJournalEngine.recordTickets(journalState!!, listOf(ticket))
+                        journalState = journalStore.save(journalState!!)
+                        journal = journalStore.snapshot(journalState!!)
+                    }
                     submitted += "${setup.symbol} ${side.uppercase()} qty=${submission.quantity.toInt()}"
                 } catch (error: Exception) {
                     skipped += "${setup.symbol}: ${error.message ?: "revalidation failed"}"
@@ -247,18 +282,23 @@ class BackgroundScanService : Service() {
             ?: throw IllegalStateException("gross exposure could not be verified")
     }
 
-    private suspend fun scanSnapshots(environment: DirectEnvironment, key: String, secret: String): List<com.alpacatalk.trading.data.MarketSnapshot> {
+    private suspend fun scanSnapshots(environment: DirectEnvironment, key: String, secret: String): ScanSweep {
         val limiter = Semaphore(ScannerBaskets.AUTO_SCAN_MAX_CONCURRENT_BATCHES)
-        return coroutineScope {
+        val batches = coroutineScope {
             ScannerBaskets.scanBatches().map { batch ->
                 async(Dispatchers.IO) {
                     limiter.withPermit {
-                        runCatching { environment.scanMarkets(key, secret, batch, includeControlledDiagnostics = false).snapshots }
-                            .getOrDefault(emptyList())
+                        runCatching { environment.scanMarkets(key, secret, batch, includeControlledDiagnostics = false) }
                     }
                 }
-            }.awaitAll().flatten().distinctBy { it.symbol }.sortedByDescending { it.score }
+            }.awaitAll()
         }
+        val results = batches.filter { it.isSuccess }.mapNotNull { it.getOrNull() }
+        return ScanSweep(
+            snapshots = results.flatMap { it.snapshots }.distinctBy { it.symbol }.sortedByDescending { it.score },
+            scannedCount = results.sumOf { it.requestedSymbols.size },
+            failedBatchCount = batches.count { it.isFailure },
+        )
     }
 
     private fun accountJournal(environment: DirectEnvironment, account: JsonObject): TradeJournalStore {
