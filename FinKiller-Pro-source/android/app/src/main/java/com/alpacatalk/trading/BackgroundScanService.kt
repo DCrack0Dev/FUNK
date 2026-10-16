@@ -4,15 +4,19 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationManagerCompat
+import com.alpacatalk.trading.data.BrokerOrderMapper
 import com.alpacatalk.trading.data.CredentialVault
+import com.alpacatalk.trading.data.ClosedTradeReconciler
 import com.alpacatalk.trading.data.DirectEnvironment
-import com.alpacatalk.trading.data.JournalSnapshot
+import com.alpacatalk.trading.data.JournalState
 import com.alpacatalk.trading.data.OpenStopRiskCalculator
 import com.alpacatalk.trading.data.NotionalExposurePolicy
 import com.alpacatalk.trading.data.OrderNotional
 import com.alpacatalk.trading.data.PositionNotional
 import com.alpacatalk.trading.data.ScannerBaskets
 import com.alpacatalk.trading.data.TradeGeometry
+import com.alpacatalk.trading.data.TradeJournalEngine
+import com.alpacatalk.trading.data.TradeJournalStore
 import com.alpacatalk.trading.data.TradeTicketFactory
 import com.alpacatalk.trading.data.TradeEligibilityRules
 import com.alpacatalk.trading.ui.ScanAlertNotifications
@@ -101,6 +105,9 @@ class BackgroundScanService : Service() {
             else -> DirectEnvironment.PAPER
         }
         val account = environment.account(key, secret)
+        val journalStore = accountJournal(environment, account)
+        val journalState = reconcileJournal(environment, key, secret, journalStore)
+        val journal = journalStore.snapshot(journalState)
         val positions = environment.positions(key, secret)
         val openOrders = environment.openOrders(key, secret)
         val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
@@ -116,7 +123,7 @@ class BackgroundScanService : Service() {
 
         val snapshots = scanSnapshots(environment, key, secret)
         val qualifying = snapshots.filter {
-            TradeEligibilityRules.evaluate(it, environment, JournalSnapshot.EMPTY, 72).eligible
+            TradeEligibilityRules.evaluate(it, environment, journal, 72).eligible
         }
         if (qualifying.isEmpty()) {
             return "Monitoring ${ScannerBaskets.allSymbols.size} markets · no qualifying setup · next scan in 60s"
@@ -144,6 +151,9 @@ class BackgroundScanService : Service() {
                 throw IllegalStateException("regular U.S. equity market is closed")
             }
             val account = environment.account(key, secret)
+            val journalStore = accountJournal(environment, account)
+            var journalState = reconcileJournal(environment, key, secret, journalStore)
+            var journal = journalStore.snapshot(journalState)
             val positions = environment.positions(key, secret)
             val openOrders = environment.openOrders(key, secret)
             val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
@@ -154,7 +164,7 @@ class BackgroundScanService : Service() {
             val equity = account.text("equity")?.toDoubleOrNull()?.takeIf { it > 0.0 }
                 ?: throw IllegalStateException("verified account equity unavailable")
             val snapshots = scanSnapshots(environment, key, secret)
-            val qualifying = snapshots.filter { TradeEligibilityRules.evaluate(it, environment, JournalSnapshot.EMPTY, 72).eligible }
+            val qualifying = snapshots.filter { TradeEligibilityRules.evaluate(it, environment, journal, 72).eligible }
             if (qualifying.isEmpty()) {
                 ScanAlertNotifications.showActionResult(this, "No orders submitted", listOf("No setups still pass every gate after fresh revalidation."))
                 return
@@ -178,7 +188,30 @@ class BackgroundScanService : Service() {
                     val batchRisk = equity * 0.005 * qualifying.size
                     val riskGate = com.alpacatalk.trading.data.PortfolioRiskPolicy.assessStopRisk(equity, freshRisk.downsideRiskDollars ?: throw IllegalStateException("risk unavailable"), plan.estimatedRiskDollars, maxOf(plan.estimatedRiskDollars, batchRisk))
                     if (!riskGate.allowed) throw IllegalStateException(riskGate.reason ?: "portfolio risk gate blocked")
-                    val submission = environment.submitBracketOrder(key, secret, setup.symbol, side, stop, target, referenceEntryPrice = setup.lastPrice, clientOrderId = TradeTicketFactory.newClientOrderId(), equityDollars = equity, currentGrossExposureDollars = gross)
+                    val clientOrderId = TradeTicketFactory.newClientOrderId()
+                    val eligibility = TradeEligibilityRules.evaluate(setup, environment, journal, 72)
+                    val submission = environment.submitBracketOrder(key, secret, setup.symbol, side, stop, target, referenceEntryPrice = setup.lastPrice, clientOrderId = clientOrderId, equityDollars = equity, currentGrossExposureDollars = gross)
+                    val ticket = TradeTicketFactory.ticket(
+                        symbol = setup.symbol,
+                        side = side,
+                        accountMode = environment.name,
+                        entryPrice = submission.referencePrice,
+                        stopPrice = submission.stopPrice,
+                        targetPrice = submission.targetPrice,
+                        quantity = submission.quantity,
+                        setupLabel = setup.setup,
+                        signalScoreAtEntry = setup.score,
+                        appRatingAtEntry = eligibility.appRating,
+                        directiveAtEntry = eligibility.memoryDecision.directive,
+                        entryType = "background monitor bracket",
+                        openedAtEpochMs = System.currentTimeMillis(),
+                        clientOrderId = clientOrderId,
+                        brokerOrderId = submission.order["id"]?.jsonPrimitive?.contentOrNull,
+                        notes = "Submitted by the background monitor; setup memory was loaded from the account journal.",
+                    )
+                    journalState = TradeJournalEngine.recordTickets(journalState, listOf(ticket))
+                    journalState = journalStore.save(journalState)
+                    journal = journalStore.snapshot(journalState)
                     submitted += "${setup.symbol} ${side.uppercase()} qty=${submission.quantity.toInt()}"
                 } catch (error: Exception) {
                     skipped += "${setup.symbol}: ${error.message ?: "revalidation failed"}"
@@ -226,6 +259,32 @@ class BackgroundScanService : Service() {
                 }
             }.awaitAll().flatten().distinctBy { it.symbol }.sortedByDescending { it.score }
         }
+    }
+
+    private fun accountJournal(environment: DirectEnvironment, account: JsonObject): TradeJournalStore {
+        val accountId = account.text("id")?.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("Alpaca did not return an account ID; background learning is paused to protect account isolation.")
+        return TradeJournalStore(
+            context = applicationContext,
+            accountMode = if (environment == DirectEnvironment.LIVE) "live" else "paper",
+            accountKey = "alpaca:${environment.name}:$accountId",
+        )
+    }
+
+    private suspend fun reconcileJournal(
+        environment: DirectEnvironment,
+        key: String,
+        secret: String,
+        store: TradeJournalStore,
+    ): JournalState {
+        var state = store.load()
+        val rawOrders = environment.orders(key, secret, status = "all", limit = 500)
+        val orders = BrokerOrderMapper.fromAll(rawOrders)
+        val result = ClosedTradeReconciler.reconcile(state.openTickets, orders)
+        result.closed.forEach { trade -> state = TradeJournalEngine.recordTrade(state, trade) }
+        state = TradeJournalEngine.recordTickets(state, result.stillOpen + result.untouched)
+        result.cancelled.forEach { ticket -> state = TradeJournalEngine.removeTicket(state, ticket.ticketId) }
+        return store.save(state)
     }
 
     private fun JsonObject.text(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
