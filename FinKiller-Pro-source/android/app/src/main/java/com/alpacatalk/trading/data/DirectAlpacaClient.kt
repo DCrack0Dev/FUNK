@@ -609,8 +609,10 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
         val minScanRr = TradeGeometry.MIN_SCAN_REWARD_RISK
         val longScalpCandidate = longScalp.count { it.aligned } >= 2 && longScalp.any { it.breakout || it.liquiditySweep } && longScalp.any { it.volumeExpanded } && (longScalp.maxOfOrNull { it.rr } ?: 0.0) >= minScanRr
         val shortScalpCandidate = shortScalp.count { it.aligned } >= 2 && shortScalp.any { it.breakout || it.liquiditySweep } && shortScalp.any { it.volumeExpanded } && (shortScalp.maxOfOrNull { it.rr } ?: 0.0) >= minScanRr
-        val longSwingCandidate = longSwing.any { it.aligned && (it.breakout || it.liquiditySweep) && it.rr >= minScanRr }
-        val shortSwingCandidate = shortSwing.any { it.aligned && (it.breakout || it.liquiditySweep) && it.rr >= minScanRr }
+        // Swing setups are deliberately stricter: a single 1h or 1d confirmation can be stale or
+        // counter-trend, so both higher-timeframe analyses must agree before execution is offered.
+        val longSwingCandidate = longSwing.count { it.aligned } >= 2 && longSwing.any { (it.breakout || it.liquiditySweep) && it.rr >= minScanRr }
+        val shortSwingCandidate = shortSwing.count { it.aligned } >= 2 && shortSwing.any { (it.breakout || it.liquiditySweep) && it.rr >= minScanRr }
         val longCandidate = longScalpCandidate || longSwingCandidate
         val shortCandidate = shortScalpCandidate || shortSwingCandidate
         val longTotalScore = maxOf(longScalpScore, longSwingScore)

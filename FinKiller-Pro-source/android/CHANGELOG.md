@@ -1,5 +1,10 @@
 # Fin Killer Pro source audit — implementation changelog
 
+## Stricter swing setup confirmation (16 October 2026)
+
+- Swing candidates now require aligned direction on both the 1-hour and 1-day analyses, plus a breakout/liquidity event and valid R:R. A single higher-timeframe signal can no longer qualify an execution setup by itself.
+- This intentionally reduces signal count to favor precision and avoid tuning the strategy to the small, low-quality 11-trade sample.
+
 ## Journal document export crash fix (16 October 2026)
 
 - Upgraded `androidx.activity:activity-compose` from `1.10.0` to `1.10.1` to fix the ActivityResult request-code crash raised when opening the CSV/PDF document picker (`only the lower 16 bits ... requestCode`).
