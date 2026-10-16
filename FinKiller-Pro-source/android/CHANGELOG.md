@@ -1,5 +1,9 @@
 # Fin Killer Pro source audit — implementation changelog
 
+## Journal document export crash fix (16 October 2026)
+
+- Upgraded `androidx.activity:activity-compose` from `1.10.0` to `1.10.1` to fix the ActivityResult request-code crash raised when opening the CSV/PDF document picker (`only the lower 16 bits ... requestCode`).
+
 ## Journal data-quality and learning fix (16 October 2026)
 
 - CSV exports now include explicit price-distance, signed price-move, instrument-unit, directional-risk-validity, and learning-eligibility fields. The legacy `*_pips` columns remain for compatibility, but stock values are explicitly labeled as ticks.
