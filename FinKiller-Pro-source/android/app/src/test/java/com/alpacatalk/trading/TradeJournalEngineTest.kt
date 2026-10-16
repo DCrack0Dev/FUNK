@@ -169,7 +169,7 @@ class TradeJournalEngineTest {
         val snapshot = snapshotOf(trade("t1", TradeOutcome.LOSS, appRating = 50))
         val memory = snapshot.memories.first { it.key == "AAPL|SCALP" }
         assertEquals(1, memory.losses)
-        assertEquals(33, memory.rating)
+        assertEquals(36, memory.rating)
         assertEquals(TradeDirective.CAUTION, memory.directive)
         assertEquals(TradeJournalEngine.SCORE_ADJUSTMENT_CAUTION, memory.scoreAdjustment)
     }
@@ -179,8 +179,8 @@ class TradeJournalEngineTest {
         val confident = snapshotOf(trade("t1", TradeOutcome.LOSS, appRating = 90)).memories.first { it.key == "AAPL|SCALP" }
         val doubtful = snapshotOf(trade("t1", TradeOutcome.LOSS, appRating = 20)).memories.first { it.key == "AAPL|SCALP" }
         assertTrue("a loss on a highly rated setup must cost more rating", confident.rating < doubtful.rating)
-        assertEquals(29, confident.rating)
-        assertEquals(37, doubtful.rating)
+        assertEquals(33, confident.rating)
+        assertEquals(38, doubtful.rating)
         assertEquals(1, confident.highRatedLosses)
         assertEquals(0, doubtful.highRatedLosses)
     }
@@ -296,7 +296,7 @@ class TradeJournalEngineTest {
         val first = TradeJournalEngine.rebuild(state)
         val second = TradeJournalEngine.rebuild(state)
         assertEquals(first.memories.first { it.key == "AAPL|SCALP" }.rating, second.memories.first { it.key == "AAPL|SCALP" }.rating)
-        assertEquals(33, first.memories.first { it.key == "AAPL|SCALP" }.rating)
+        assertEquals(40, first.memories.first { it.key == "AAPL|SCALP" }.rating)
 
         val rewound = TradeJournalEngine.rebuild(TradeJournalEngine.removeTrade(state, "t3"))
         val rewoundMemory = rewound.memories.first { it.key == "AAPL|SCALP" }
@@ -313,10 +313,10 @@ class TradeJournalEngineTest {
         val points = snapshot.ratingPoints.filter { it.memoryKey == "AAPL|SCALP" }.sortedBy { it.tradeId }
         assertEquals(2, points.size)
         assertEquals(TradeJournalEngine.NEUTRAL_RATING, points[0].ratingBefore)
-        assertEquals(29, points[0].ratingAfter)
-        assertEquals(29, points[1].ratingBefore)
-        assertEquals(20, points[1].ratingAfter)
-        assertEquals(-9, points[1].delta)
+        assertEquals(33, points[0].ratingAfter)
+        assertEquals(33, points[1].ratingBefore)
+        assertEquals(25, points[1].ratingAfter)
+        assertEquals(-8, points[1].delta)
         assertEquals(TradeDirective.PROBATION, points[1].directiveAfter)
     }
 
@@ -349,7 +349,7 @@ class TradeJournalEngineTest {
         val aapl = TradeJournalEngine.decision(snapshot, "AAPL", scalpLabel)
         assertEquals(TradeDirective.ALLOW, aapl.symbolRecord?.directive)
         assertEquals(TradeDirective.CAUTION, aapl.familyRecord?.directive)
-        assertEquals(60, aapl.familyRecord?.rating)
+        assertEquals(64, aapl.familyRecord?.rating)
         assertEquals("the stricter of the two memories wins", TradeDirective.CAUTION, aapl.directive)
         assertEquals(TradeJournalEngine.SCORE_ADJUSTMENT_CAUTION, aapl.scoreAdjustment)
     }

@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import com.alpacatalk.trading.data.TradeJournalEngine
 import com.alpacatalk.trading.data.TradeEligibilityRules
+import com.alpacatalk.trading.data.TradeGeometry
 import com.alpacatalk.trading.data.ScannerBaskets
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.material.icons.Icons
@@ -667,8 +668,8 @@ private fun DirectDashboard(state: DirectTradingState, viewModel: DirectTradingV
             ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Text("Setup definitions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("SCALP · mean 1m/15m component scores; candidate needs both timeframe alignments, a breakout/sweep, volume expansion, and R:R ≥ 1.5.", style = MaterialTheme.typography.bodySmall)
-                    Text("SWING · mean 1h/1d component scores; candidate needs an aligned timeframe, breakout/sweep, and base R:R ≥ 2.0; actionable results require R:R ≥ 1.5.", style = MaterialTheme.typography.bodySmall)
+                    Text("SCALP · mean 1m/15m component scores; candidate needs both timeframe alignments, a breakout/sweep, volume expansion, and R:R ≥ 1:1.", style = MaterialTheme.typography.bodySmall)
+                    Text("SWING · mean 1h/1d component scores; candidate needs an aligned timeframe, breakout/sweep, and R:R ≥ 1:1; all other entry and risk gates still apply.", style = MaterialTheme.typography.bodySmall)
                     Text("Protective bracket sides: BUY/LONG stop-loss below entry, target above; SELL/SHORT stop-loss above entry, target below. The app checks both against the fresh order-side quote before submitting.", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
                     Text("Scanner score is a rule score, not a win probability: trend/EMA 25, VWAP 15, breakout/sweep 20, volume 15, R:R 15, history 10. Group means are compared; the higher is shown.", style = MaterialTheme.typography.bodySmall)
                     Text("App rating = rounded 70% scanner score + 30% eligibility-memory rating. Before 20 closed samples, the memory component cannot exceed neutral 50 (so it may penalize, never boost); memory directives adjust the scanner score separately.", style = MaterialTheme.typography.bodySmall)
@@ -763,7 +764,7 @@ private fun DirectDashboard(state: DirectTradingState, viewModel: DirectTradingV
                 Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
                     Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("Select setups for manual execution", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text("Select setups that pass the ${state.minimumSignalScore}–100 score/rating, memory, strategy, and minimum 1:1.5 reward-risk gates. Scan alerts never submit orders; findings below 1:1.5 are excluded.", style = MaterialTheme.typography.bodySmall)
+                        Text("Select setups that pass the ${state.minimumSignalScore}–100 score/rating, memory, strategy, and minimum 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MIN_SCAN_REWARD_RISK)} reward-risk gates. Scan alerts never submit orders; findings below 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MIN_SCAN_REWARD_RISK)} are excluded.", style = MaterialTheme.typography.bodySmall)
                         Text("App rating = rounded 70% scanner score + 30% eligibility-memory rating. Before 20 closed samples the memory component cannot exceed neutral 50, though negative memory can still penalize. Memory directives also adjust scanner score separately; both scores must be at least ${state.minimumSignalScore}, and live trades require a confirmed setup.", style = MaterialTheme.typography.bodySmall)
                         if (qualified.isEmpty()) {
                             Text("No setups currently pass every execution gate. Scan another group or wait for better market conditions.")
@@ -796,7 +797,7 @@ private fun DirectDashboard(state: DirectTradingState, viewModel: DirectTradingV
                                     Text("Evidence confidence: UNVALIDATED · out-of-sample result unavailable · ${snapshot.timeframesCovered}/4 timeframes · quote age ${quoteAge} · symbol/family samples ${symbolMemory?.trades ?: 0}/${familyMemory?.trades ?: 0} · ${snapshot.historyBars} max bars · spread ${snapshot.spreadPct?.let { "%.3f%%".format(java.util.Locale.US, it) } ?: "unknown"}.", style = MaterialTheme.typography.bodySmall)
                                     val bracketSideCheck = if (snapshot.direction == com.alpacatalk.trading.data.TradeDirection.LONG) "LONG: stop < entry < target" else "SHORT: target < entry < stop"
                                     val executionLabel = if (snapshot.isExecutableSetup) "PASS" else "BLOCKED"
-                                    Text("Execution eligibility: $executionLabel — ${if (snapshot.isExecutableSetup) "rule-qualified candidate" else "not executable until all directional and data gates pass"}; ${eligibility?.blockReasons?.joinToString()?.ifBlank { "all scan/rating gates passed" } ?: "eligibility unavailable"} · ${snapshot.executionGate} · ${snapshot.dataQualityReason} · $bracketSideCheck · entry ${snapshot.lastPrice.money()} · stop ${snapshot.scannerStopPrice?.money() ?: "unknown"} · target ${snapshot.scannerTargetPrice?.money() ?: "unknown"} · auto R:R ${snapshot.rewardRisk?.let { "1:%.2f".format(java.util.Locale.US, it) } ?: "unknown"} (minimum 1:1.5).", style = MaterialTheme.typography.bodySmall)
+                                    Text("Execution eligibility: $executionLabel — ${if (snapshot.isExecutableSetup) "rule-qualified candidate" else "not executable until all directional and data gates pass"}; ${eligibility?.blockReasons?.joinToString()?.ifBlank { "all scan/rating gates passed" } ?: "eligibility unavailable"} · ${snapshot.executionGate} · ${snapshot.dataQualityReason} · $bracketSideCheck · entry ${snapshot.lastPrice.money()} · stop ${snapshot.scannerStopPrice?.money() ?: "unknown"} · target ${snapshot.scannerTargetPrice?.money() ?: "unknown"} · auto R:R ${snapshot.rewardRisk?.let { "1:%.2f".format(java.util.Locale.US, it) } ?: "unknown"} (minimum 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MIN_SCAN_REWARD_RISK)}).", style = MaterialTheme.typography.bodySmall)
                                     Text("Memory evidence: symbol ${symbolMemory?.trades ?: 0} trade(s), ${symbolMemory?.wins ?: 0}W/${symbolMemory?.losses ?: 0}L; family ${familyMemory?.trades ?: 0} trade(s), ${familyMemory?.wins ?: 0}W/${familyMemory?.losses ?: 0}L. Directive ${memory.directive}; ${memory.reason}. This is a small-sample rule heuristic, not statistical validation.", style = MaterialTheme.typography.bodySmall)
                                     snapshot.scoreBreakdown.forEach { Text(it, style = MaterialTheme.typography.labelSmall) }
                                 }

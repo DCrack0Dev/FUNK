@@ -66,6 +66,14 @@ object TradeMath {
         return roundTo(abs(targetPrice - entryPrice) / risk, 2)
     }
 
+    fun validationError(symbol: String, side: String, entryPrice: Double, stopPrice: Double, targetPrice: Double): String? {
+        if (listOf(entryPrice, stopPrice, targetPrice).any { !it.isFinite() || it <= 0.0 }) return "non-positive or non-finite price"
+        val short = isShort(side)
+        if (short && !(targetPrice < entryPrice && entryPrice < stopPrice)) return "SHORT requires target < entry < stop"
+        if (!short && !(stopPrice < entryPrice && entryPrice < targetPrice)) return "LONG requires stop < entry < target"
+        return null
+    }
+
     fun realizedPnl(side: String, entryPrice: Double, exitPrice: Double, quantity: Double): Double {
         if (!entryPrice.isFinite() || !exitPrice.isFinite() || !quantity.isFinite()) return 0.0
         return roundTo((exitPrice - entryPrice) * directionMultiplier(side) * quantity, 2)

@@ -1063,8 +1063,11 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
             val geometryError = TradeGeometry.validationError(orderSide == "buy", setup.lastPrice, stop, target)
             _state.update { it.copy(debuggerTerminal = appendDebug(it, listOf("BRACKET GEOMETRY" to "source=scanner snapshot; symbol=${setup.symbol}; direction=${setup.direction.label}; side=$orderSide; scanEntry=${format(setup.lastPrice)}; stop=${format(stop)}; target=${format(target)}; validation=${geometryError ?: "pass"}."))) }
             if (geometryError != null) throw IllegalStateException("Execution blocked: $geometryError No order was sent.")
-            val riskSnapshot = OpenStopRiskCalculator.calculate(account, positions, workingOrders)
-            val orderDiagnostics = workingOrders.map { order ->
+            val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, workingOrders)
+            val verifiedPositions = if (repairedStops.isEmpty()) positions else environment.positions(key, secret)
+            val verifiedWorkingOrders = if (repairedStops.isEmpty()) workingOrders else environment.orders(key, secret, status = "open", limit = 500)
+            val riskSnapshot = OpenStopRiskCalculator.calculate(account, verifiedPositions, verifiedWorkingOrders)
+            val orderDiagnostics = verifiedWorkingOrders.map { order ->
                 val symbol = order["symbol"]?.jsonPrimitive?.contentOrNull ?: "?"
                 val id = order["id"]?.jsonPrimitive?.contentOrNull ?: order["client_order_id"]?.jsonPrimitive?.contentOrNull ?: "?"
                 val status = order["status"]?.jsonPrimitive?.contentOrNull ?: "?"
@@ -1078,7 +1081,7 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
                     ?: "?"
                 "$symbol id=$id status=$status side=$side type=$type qty=$qty filled=$filled remaining=$remaining stop=$stopPrice"
             }
-            _state.update { it.copy(debuggerTerminal = appendDebug(it, listOf("STOP RISK INPUT" to "broker=${environment.label}; account=selected-session; positions=${positions.size}; openOrders=${workingOrders.size}; ${orderDiagnostics.joinToString(" | ").ifBlank { "no open orders" }}; calculated=${riskSnapshot.downsideRiskDollars?.let(::format) ?: "unknown"}; verified=${riskSnapshot.isVerified}; issue=${riskSnapshot.issue ?: "none"}."))) }
+            _state.update { it.copy(debuggerTerminal = appendDebug(it, listOf("STOP RISK INPUT" to "broker=${environment.label}; automaticRepairs=${repairedStops.joinToString().ifBlank { "none" }}; account=selected-session; positions=${verifiedPositions.size}; openOrders=${verifiedWorkingOrders.size}; ${orderDiagnostics.joinToString(" | ").ifBlank { "no open orders" }}; calculated=${riskSnapshot.downsideRiskDollars?.let(::format) ?: "unknown"}; verified=${riskSnapshot.isVerified}; issue=${riskSnapshot.issue ?: "none"}."))) }
             if (!riskSnapshot.isFresh()) throw IllegalStateException("Execution blocked: open stop risk could not be freshly verified (${riskSnapshot.issue ?: "snapshot stale"}).")
             orderIntentStore.get(environment.name, setup.symbol)?.let { persistedClientOrderId ->
                 val priorOrder = try {
@@ -1095,14 +1098,14 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
                 }
                 orderIntentStore.remove(environment.name, setup.symbol)
             }
-            val positionNotionals = positions.map { position ->
+            val positionNotionals = verifiedPositions.map { position ->
                 PositionNotional(
                     position["symbol"]?.jsonPrimitive?.contentOrNull ?: "?",
                     position["market_value"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull(),
                     position["side"]?.jsonPrimitive?.contentOrNull,
                 )
             }
-            val orderNotionals = workingOrders.filter { order -> order["parent_order_id"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() }
+            val orderNotionals = verifiedWorkingOrders.filter { order -> order["parent_order_id"]?.jsonPrimitive?.contentOrNull.isNullOrBlank() }
                 .map { order ->
                     val symbol = order["symbol"]?.jsonPrimitive?.contentOrNull ?: "?"
                     val qty = order["qty"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
@@ -1157,6 +1160,7 @@ class DirectTradingViewModel(application: Application) : AndroidViewModel(applic
                 stop,
                 target,
                 useLimitEntry = setup.symbol in SECOND_BASKET_SYMBOLS,
+                referenceEntryPrice = setup.lastPrice,
                 clientOrderId = clientOrderId,
                 equityDollars = equity,
                 currentGrossExposureDollars = grossExposure,

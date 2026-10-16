@@ -21,7 +21,8 @@ object TradeEligibilityRules {
         val adjustedScore = (setup.score + memory.scoreAdjustment).coerceIn(0, 100)
         val appRating = TradeJournalEngine.appRatingForTrade(setup.score, memory)
         val dataValid = setup.dataQualityPassed
-        val rewardRiskValid = (setup.rewardRisk ?: 0.0) + 1e-9 >= TradeGeometry.MIN_SCAN_REWARD_RISK
+        val rewardRisk = setup.rewardRisk ?: 0.0
+        val rewardRiskValid = rewardRisk + 1e-9 >= TradeGeometry.MIN_SCAN_REWARD_RISK && rewardRisk <= TradeGeometry.MAX_SCAN_REWARD_RISK + 1e-9
         val paperTestEligible = environment == DirectEnvironment.PAPER && dataValid && rewardRiskValid &&
             setup.direction != null &&
             setup.historyBars >= MarketDataQuality.MIN_COMPLETED_BARS_PER_TIMEFRAME &&
@@ -36,7 +37,7 @@ object TradeEligibilityRules {
         val reasons = buildList {
             if (environment == DirectEnvironment.LIVE) add("This build is paper-only; live execution is disabled.")
             if (!dataValid) add(setup.dataQualityReason)
-            if (!rewardRiskValid) add("Reward/risk ${setup.rewardRisk?.let { "%.2f".format(java.util.Locale.US, it) } ?: "unknown"} is below the required 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MIN_SCAN_REWARD_RISK)} minimum.")
+            if (!rewardRiskValid) add("Reward/risk ${setup.rewardRisk?.let { "%.2f".format(java.util.Locale.US, it) } ?: "unknown"} must be between 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MIN_SCAN_REWARD_RISK)} and 1:${"%.2f".format(java.util.Locale.US, TradeGeometry.MAX_SCAN_REWARD_RISK)}.")
             if (setup.direction == null) add("Direction is missing or ambiguous.")
             if (adjustedScore < minimumScore) add("Adjusted scanner score $adjustedScore is below $minimumScore.")
             if (appRating < minimumScore) add("Blended app rating $appRating is below $minimumScore.")

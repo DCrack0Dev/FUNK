@@ -33,6 +33,7 @@ import kotlin.math.abs
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.UUID
 
 class DirectAlpacaException(message: String) : Exception(message)
 
@@ -219,6 +220,78 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
         if (response.status.value == 404) return null
         if (response.status.value !in 200..299) throw DirectAlpacaException("Unable to verify persisted client order id (HTTP ${response.status.value}); no retry is allowed.")
         return response.body()
+    }
+
+    /**
+     * Repairs Paper positions that have no single quantity-covering stop. Existing active stop
+     * legs for that symbol are canceled first, cancellation is verified, then one break-even GTC
+     * stop for the full position quantity is submitted. Live accounts are never mutated here.
+     */
+    suspend fun repairMissingProtectiveStops(
+        apiKey: String,
+        apiSecret: String,
+        positions: List<JsonObject>,
+        orders: List<JsonObject>,
+    ): List<String> {
+        if (this != PAPER) throw DirectAlpacaException("Automatic protective-stop repair is disabled for live accounts.")
+        val activeStatuses = setOf("new", "accepted", "pending_new", "accepted_for_bidding", "partially_filled", "pending_cancel", "pending_replace", "held")
+        val stopTypes = setOf("stop", "trailing_stop")
+        fun text(order: JsonObject, key: String): String? = order[key]?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
+        fun number(order: JsonObject, key: String): Double? = text(order, key)?.toDoubleOrNull()?.takeIf { it.isFinite() }
+        fun legs(order: JsonObject): List<JsonObject> = (order["legs"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+        fun flattened(order: JsonObject): List<JsonObject> = listOf(order) + legs(order).flatMap(::flattened)
+        val allOrders = orders.flatMap(::flattened)
+        val repaired = mutableListOf<String>()
+        positions.forEach { position ->
+            val symbol = text(position, "symbol")?.uppercase() ?: return@forEach
+            val reportedQuantity = number(position, "qty")?.let(::abs)?.takeIf { it > 0.0 } ?: return@forEach
+            val entry = number(position, "avg_entry_price")?.takeIf { it > 0.0 } ?: return@forEach
+            val positionSide = text(position, "side")?.lowercase() ?: return@forEach
+            val exitSide = if (positionSide == "short") "buy" else "sell"
+            val candidates = allOrders.filter { order ->
+                text(order, "symbol")?.equals(symbol, ignoreCase = true) == true &&
+                    text(order, "side")?.equals(exitSide, ignoreCase = true) == true &&
+                    text(order, "type")?.lowercase() in stopTypes &&
+                    text(order, "status")?.lowercase() in activeStatuses
+            }
+            val hasCoveringStop = candidates.any { order ->
+                val stop = number(order, "stop_price") ?: return@any false
+                val orderQty = (number(order, "remaining_qty") ?: number(order, "qty"))?.let(::abs) ?: return@any false
+                stop > 0.0 && orderQty + 1e-8 >= reportedQuantity
+            }
+            if (hasCoveringStop) return@forEach
+
+            val stopIds = candidates.mapNotNull { text(it, "id") }.distinct()
+            stopIds.forEach { cancelOrder(apiKey, apiSecret, it) }
+            val afterCancel = orders(apiKey, apiSecret, status = "open", limit = 500).flatMap(::flattened)
+            val stillActive = afterCancel.any { order ->
+                text(order, "symbol")?.equals(symbol, ignoreCase = true) == true &&
+                    text(order, "side")?.equals(exitSide, ignoreCase = true) == true &&
+                    text(order, "type")?.lowercase() in stopTypes &&
+                    text(order, "status")?.lowercase() in activeStatuses
+            }
+            if (stillActive) throw DirectAlpacaException("Automatic stop repair for $symbol could not verify cancellation of the prior protective stop.")
+
+            val refreshedPosition = positions(apiKey, apiSecret).firstOrNull { text(it, "symbol")?.equals(symbol, ignoreCase = true) == true }
+            val availableQuantity = number(refreshedPosition ?: position, "qty_available")?.let(::abs)
+                ?: reportedQuantity
+            if (availableQuantity + 1e-8 < reportedQuantity) {
+                throw DirectAlpacaException("Automatic stop repair for $symbol found only ${format(availableQuantity)} of ${format(reportedQuantity)} quantity available after canceling reservations.")
+            }
+            val stopQuantity = availableQuantity.coerceAtLeast(reportedQuantity)
+            val stopPrice = BigDecimal.valueOf(entry).setScale(2, RoundingMode.HALF_UP).toPlainString()
+            requestObjectWithBody(apiKey, apiSecret, "/v2/orders", buildJsonObject {
+                put("symbol", symbol)
+                put("qty", stopQuantity.toString())
+                put("side", exitSide)
+                put("type", "stop")
+                put("time_in_force", "gtc")
+                put("stop_price", stopPrice)
+                put("client_order_id", "finkiller-protect-${symbol.lowercase()}-${UUID.randomUUID().toString().take(12)}")
+            })
+            repaired += "$symbol qty=${format(stopQuantity)} stop=$stopPrice"
+        }
+        return repaired
     }
 
     /** Returns filled account activities so the app can reconstruct completed round trips. */
@@ -579,7 +652,15 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
             TradeDirection.SHORT -> if (shortScalpScore >= shortSwingScore) shortScalp else shortSwing
             null -> allStats
         }
-        val bestStats = selectedStats.maxByOrNull { it.score }
+        // Prefer a setup whose preserved stop/target are still on the correct sides of
+        // the latest quote. A higher-scoring timeframe can become stale while another
+        // qualifying timeframe remains executable; selecting it avoids an apparently
+        // random stop-loss rejection without rebasing prices or weakening the guard.
+        val quoteValidStats = selectedStats.filter {
+            it.rr + 1e-9 >= minScanRr &&
+                TradeGeometry.validationError(direction == TradeDirection.LONG, last, it.stopPrice, it.targetPrice) == null
+        }
+        val bestStats = (quoteValidStats.ifEmpty { selectedStats }).maxByOrNull { it.score }
             ?: SetupStats(0.0, 0.0, 0.0, 0, false, false, false, false, false, 0.0, "No usable OHLCV history")
         val scannerPriceError = direction?.let {
             TradeGeometry.validationError(it == TradeDirection.LONG, last, bestStats.stopPrice, bestStats.targetPrice)
@@ -638,8 +719,8 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
             executionGate = executionGate,
             timeframeDiagnostics = timeframeDiagnostics,
             direction = direction,
-            scannerStopPrice = bestStats.stopPrice.takeIf { it > 0.0 },
-            scannerTargetPrice = bestStats.targetPrice.takeIf { it > 0.0 },
+            scannerStopPrice = bestStats.stopPrice.takeIf { it > 0.0 && scannerPriceError == null },
+            scannerTargetPrice = bestStats.targetPrice.takeIf { it > 0.0 && scannerPriceError == null },
             dataQualityPassed = dataQuality.passed,
             dataQualityReason = dataQuality.reasons.ifEmpty { listOf("All required market-data checks passed.") }.joinToString("; "),
             timeframesCovered = dataQuality.timeframesCovered,
@@ -731,7 +812,7 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
         if (vwapConfirmed) score += 15
         if (breakout || liquiditySweep) score += 20
         if (volumeExpanded) score += 15
-        if (rr >= if (mode == "swing") 2.0 else 1.5) score += 15
+        if (rr + 1e-9 >= TradeGeometry.MIN_SCAN_REWARD_RISK) score += 15
         if (bars.size >= 20) score += 10
         val event = when {
             breakout && isLong -> "upside range breakout"
@@ -758,6 +839,7 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
         apiKey: String, apiSecret: String, symbol: String, side: String,
         stopPrice: Double, targetPrice: Double,
         useLimitEntry: Boolean = false,
+        referenceEntryPrice: Double? = null,
         clientOrderId: String? = null,
         equityDollars: Double,
         currentGrossExposureDollars: Double,
@@ -792,8 +874,11 @@ enum class DirectEnvironment(val label: String, private val baseUrl: String) {
         val basePrice = entryPrice
         if (!basePrice.isFinite() || basePrice <= 0.0) throw DirectAlpacaException("Cannot build bracket: no valid current price for $normalizedSymbol.")
         val isLong = normalizedSide == "buy"
-        val stop = if (isLong) priceDown(stopPrice) else priceUp(stopPrice)
-        val target = if (isLong) priceUp(targetPrice) else priceDown(targetPrice)
+        val rebased = referenceEntryPrice?.let { reference ->
+            TradeGeometry.rebaseBracket(isLong, reference, stopPrice, targetPrice, basePrice)
+        }
+        val stop = if (isLong) priceDown(rebased?.first ?: stopPrice) else priceUp(rebased?.first ?: stopPrice)
+        val target = if (isLong) priceUp(rebased?.second ?: targetPrice) else priceDown(rebased?.second ?: targetPrice)
         val remainingNotionalCapacity = NotionalExposurePolicy.remainingCapacityDollars(
             equityDollars = equityDollars,
             grossExposureDollars = currentGrossExposureDollars,

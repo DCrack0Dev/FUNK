@@ -103,7 +103,10 @@ class BackgroundScanService : Service() {
         val account = environment.account(key, secret)
         val positions = environment.positions(key, secret)
         val openOrders = environment.openOrders(key, secret)
-        val risk = OpenStopRiskCalculator.calculate(account, positions, openOrders)
+        val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
+        val verifiedPositions = if (repairedStops.isEmpty()) positions else environment.positions(key, secret)
+        val verifiedOrders = if (repairedStops.isEmpty()) openOrders else environment.openOrders(key, secret)
+        val risk = OpenStopRiskCalculator.calculate(account, verifiedPositions, verifiedOrders)
         if (!risk.isVerified || !risk.isFresh()) {
             throw IllegalStateException("waiting for verified stop-risk state: ${risk.issue ?: "snapshot stale"}")
         }
@@ -143,7 +146,10 @@ class BackgroundScanService : Service() {
             val account = environment.account(key, secret)
             val positions = environment.positions(key, secret)
             val openOrders = environment.openOrders(key, secret)
-            val risk = OpenStopRiskCalculator.calculate(account, positions, openOrders)
+            val repairedStops = environment.repairMissingProtectiveStops(key, secret, positions, openOrders)
+            val verifiedPositions = if (repairedStops.isEmpty()) positions else environment.positions(key, secret)
+            val verifiedOrders = if (repairedStops.isEmpty()) openOrders else environment.openOrders(key, secret)
+            val risk = OpenStopRiskCalculator.calculate(account, verifiedPositions, verifiedOrders)
             if (!risk.isFresh() || risk.capReached) throw IllegalStateException(risk.issue ?: "stop-risk verification failed or cap reached")
             val equity = account.text("equity")?.toDoubleOrNull()?.takeIf { it > 0.0 }
                 ?: throw IllegalStateException("verified account equity unavailable")
@@ -158,7 +164,10 @@ class BackgroundScanService : Service() {
                     val latestPositions = environment.positions(key, secret)
                     val latestOrders = environment.openOrders(key, secret)
                     val latestAccount = environment.account(key, secret)
-                    val freshRisk = OpenStopRiskCalculator.calculate(latestAccount, latestPositions, latestOrders)
+                    val repairedStops = environment.repairMissingProtectiveStops(key, secret, latestPositions, latestOrders)
+                    val verifiedPositions = if (repairedStops.isEmpty()) latestPositions else environment.positions(key, secret)
+                    val verifiedOrders = if (repairedStops.isEmpty()) latestOrders else environment.openOrders(key, secret)
+                    val freshRisk = OpenStopRiskCalculator.calculate(latestAccount, verifiedPositions, verifiedOrders)
                     if (!freshRisk.isFresh() || freshRisk.capReached) throw IllegalStateException("fresh stop-risk verification failed")
                     val gross = grossExposure(latestPositions, latestOrders, setup.lastPrice)
                     val stop = setup.scannerStopPrice ?: throw IllegalStateException("stop missing")
@@ -169,7 +178,7 @@ class BackgroundScanService : Service() {
                     val batchRisk = equity * 0.005 * qualifying.size
                     val riskGate = com.alpacatalk.trading.data.PortfolioRiskPolicy.assessStopRisk(equity, freshRisk.downsideRiskDollars ?: throw IllegalStateException("risk unavailable"), plan.estimatedRiskDollars, maxOf(plan.estimatedRiskDollars, batchRisk))
                     if (!riskGate.allowed) throw IllegalStateException(riskGate.reason ?: "portfolio risk gate blocked")
-                    val submission = environment.submitBracketOrder(key, secret, setup.symbol, side, stop, target, clientOrderId = TradeTicketFactory.newClientOrderId(), equityDollars = equity, currentGrossExposureDollars = gross)
+                    val submission = environment.submitBracketOrder(key, secret, setup.symbol, side, stop, target, referenceEntryPrice = setup.lastPrice, clientOrderId = TradeTicketFactory.newClientOrderId(), equityDollars = equity, currentGrossExposureDollars = gross)
                     submitted += "${setup.symbol} ${side.uppercase()} qty=${submission.quantity.toInt()}"
                 } catch (error: Exception) {
                     skipped += "${setup.symbol}: ${error.message ?: "revalidation failed"}"

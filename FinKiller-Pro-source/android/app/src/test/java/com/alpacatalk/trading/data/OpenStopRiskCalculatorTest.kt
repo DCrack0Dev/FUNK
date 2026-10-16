@@ -113,15 +113,32 @@ class OpenStopRiskCalculatorTest {
     }
 
     @Test
-    fun pendingEntryOrderWithoutPositionFailsClosed() {
+    fun strictlyUnfilledPendingEntryDoesNotCreateCurrentStopRisk() {
         val pendingEntry = buildJsonObject {
             put("symbol", "MSFT")
             put("qty", 1.0)
+            put("filled_qty", 0.0)
             put("type", "limit")
             put("side", "buy")
             put("status", "accepted")
         }
         val risk = OpenStopRiskCalculator.calculate(account(1_000.0), emptyList(), listOf(pendingEntry), nowEpochMs = 1_000L)
+        assertTrue(risk.isVerified)
+        assertEquals(0.0, risk.downsideRiskDollars!!, 1e-8)
+    }
+
+    @Test
+    fun partiallyFilledPendingEntryWithoutProtectionStillFailsClosed() {
+        val partiallyFilledEntry = buildJsonObject {
+            put("symbol", "MSFT")
+            put("qty", 10.0)
+            put("filled_qty", 1.0)
+            put("remaining_qty", 9.0)
+            put("type", "limit")
+            put("side", "buy")
+            put("status", "accepted")
+        }
+        val risk = OpenStopRiskCalculator.calculate(account(1_000.0), emptyList(), listOf(partiallyFilledEntry), nowEpochMs = 1_000L)
         assertFalse(risk.isVerified)
         assertNull(risk.downsideRiskDollars)
         assertTrue(risk.issue!!.contains("Working entry"))
@@ -147,7 +164,7 @@ class OpenStopRiskCalculatorTest {
     }
 
     @Test
-    fun workingBracketWithoutBrokerStopStillFailsClosedWithOrderDiagnostics() {
+    fun zeroFilledBracketWithoutBrokerStopDoesNotCreateCurrentStopRisk() {
         val unprotectedBracket = buildJsonObject {
             put("id", "mdy-entry-2")
             put("symbol", "MDY")
@@ -160,9 +177,8 @@ class OpenStopRiskCalculatorTest {
             put("order_class", "bracket")
         }
         val risk = OpenStopRiskCalculator.calculate(account(100_000.0), emptyList(), listOf(unprotectedBracket), nowEpochMs = 1_000L)
-        assertFalse(risk.isVerified)
-        assertTrue(risk.issue!!.contains("id=mdy-entry-2"))
-        assertTrue(risk.issue!!.contains("remaining=10.0"))
+        assertTrue(risk.isVerified)
+        assertEquals(0.0, risk.downsideRiskDollars!!, 1e-8)
     }
 
     @Test

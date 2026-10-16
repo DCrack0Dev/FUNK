@@ -47,11 +47,11 @@ class TradeEligibilityRulesTest {
     }
 
     @Test
-    fun scannerRewardRiskBoundaryOfOnePointFivePasses() {
-        assertTrue(TradeEligibilityRules.evaluate(candidate(81, false).copy(rewardRisk = 1.5), DirectEnvironment.PAPER, JournalSnapshot.EMPTY, 72).eligible)
-        val below = TradeEligibilityRules.evaluate(candidate(81, false).copy(rewardRisk = 1.49), DirectEnvironment.PAPER, JournalSnapshot.EMPTY, 72)
+    fun scannerRewardRiskBoundaryOfOneToOnePasses() {
+        assertTrue(TradeEligibilityRules.evaluate(candidate(81, false).copy(rewardRisk = 1.0), DirectEnvironment.PAPER, JournalSnapshot.EMPTY, 72).eligible)
+        val below = TradeEligibilityRules.evaluate(candidate(81, false).copy(rewardRisk = 0.99), DirectEnvironment.PAPER, JournalSnapshot.EMPTY, 72)
         assertFalse(below.eligible)
-        assertTrue(below.blockReasons.any { it.contains("1:1.50") })
+        assertTrue(below.blockReasons.any { it.contains("1:1.00") })
     }
 
     private fun candidate(score: Int, executable: Boolean) = MarketSnapshot(

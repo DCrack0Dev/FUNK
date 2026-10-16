@@ -18,8 +18,10 @@ data class TradeOrderPlan(
 object TradeGeometry {
     const val DEFAULT_RISK_BUDGET_PCT = 0.005
     const val HARD_MAX_RISK_BUDGET_PCT = 0.01
-    const val MIN_REWARD_RISK = 1.5
+    /** A 1:1 bracket is acceptable when all other entry and risk gates pass. */
+    const val MIN_REWARD_RISK = 1.0
     const val MIN_SCAN_REWARD_RISK = MIN_REWARD_RISK
+    const val MAX_SCAN_REWARD_RISK = 10.0
 
     /** Returns null only when the opening bracket has valid directional price geometry. */
     fun validationError(isLong: Boolean, entryPrice: Double, stopPrice: Double, targetPrice: Double): String? {
@@ -38,6 +40,27 @@ object TradeGeometry {
                 targetPrice >= entryPrice -> "Short/SELL take-profit must be below entry (stop=${format(stopPrice)}, entry=${format(entryPrice)}, target=${format(targetPrice)})."
                 else -> null
             }
+        }
+    }
+
+    /** Re-anchor a still-valid scanner bracket to a newer entry quote without changing its R:R. */
+    fun rebaseBracket(
+        isLong: Boolean,
+        referenceEntryPrice: Double,
+        stopPrice: Double,
+        targetPrice: Double,
+        freshEntryPrice: Double,
+    ): Pair<Double, Double> {
+        require(validationError(isLong, referenceEntryPrice, stopPrice, targetPrice) == null) {
+            "Scanner bracket is not directionally valid at its reference entry."
+        }
+        require(freshEntryPrice.isFinite() && freshEntryPrice > 0.0) { "Fresh entry price must be positive and finite." }
+        val stopDistance = if (isLong) referenceEntryPrice - stopPrice else stopPrice - referenceEntryPrice
+        val targetDistance = if (isLong) targetPrice - referenceEntryPrice else referenceEntryPrice - targetPrice
+        return if (isLong) {
+            freshEntryPrice - stopDistance to (freshEntryPrice + targetDistance)
+        } else {
+            (freshEntryPrice + stopDistance) to (freshEntryPrice - targetDistance)
         }
     }
 
@@ -62,7 +85,9 @@ object TradeGeometry {
         val riskPerShare = if (isLong) entryPrice - stopPrice else stopPrice - entryPrice
         val rewardPerShare = if (isLong) targetPrice - entryPrice else entryPrice - targetPrice
         val rewardRisk = rewardPerShare / riskPerShare
-        require(rewardRisk + 1e-9 >= MIN_REWARD_RISK) { "Bracket reward/risk ${"%.3f".format(java.util.Locale.US, rewardRisk)} is below 1.5." }
+        require(rewardRisk + 1e-9 >= MIN_REWARD_RISK) {
+            "Bracket reward/risk ${"%.3f".format(java.util.Locale.US, rewardRisk)} is below 1:1."
+        }
         val budget = equityDollars * requestedRiskBudgetPct
         val riskSizedQuantity = floor(budget / riskPerShare).toInt()
         val exposureSizedQuantity = maximumNotionalDollars?.let { floor(it / entryPrice).toInt() }

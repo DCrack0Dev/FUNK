@@ -87,11 +87,11 @@ object OpenStopRiskCalculator {
         orders.forEach { flatten(it, flattened) }
         val positionsBySymbol = parsedPositions.associateBy { it.symbol }
 
-        // A working standalone order that can create or add exposure is not ignored. A broker
-        // bracket/OTO parent is allowed only when its broker response contains a valid protective
-        // stop definition; its entry is still pending and therefore cannot be counted as a filled
-        // position risk line yet. An attached OCO group is allowed only because its stop legs are
-        // separately checked below.
+        // A strictly zero-filled pending entry has no current position stop risk yet. Its
+        // remaining notional is still counted separately by the execution path, and the duplicate
+        // symbol guard still blocks a second order. Once any quantity has filled, however, the
+        // order must be a broker-confirmed protected bracket/OTO or verification fails closed.
+        // An attached OCO group is allowed only because its stop legs are separately checked below.
         orders.filter { it.text("parent_order_id").isNullOrBlank() && isWorking(it.text("status")) }.forEach { order ->
             val orderType = order.text("type")?.lowercase(Locale.US)
             val orderClass = order.text("order_class")?.lowercase(Locale.US)
@@ -101,6 +101,9 @@ object OpenStopRiskCalculator {
             val isProtectiveStop = orderType in stopTypes && position != null && side == exitSide(position.side)
             val isOcoWrapper = orderClass == "oco" && order.legs().isNotEmpty() && position != null
             val isProtectedBracketEntry = orderClass in setOf("bracket", "oto") && hasBrokerProtectedStop(order)
+            if (!isProtectiveStop && !isOcoWrapper && !isProtectedBracketEntry && isStrictlyUnfilled(order)) {
+                return@forEach
+            }
             if (!isProtectiveStop && !isOcoWrapper && !isProtectedBracketEntry) {
                 return OpenStopRiskSnapshot.unverified(describeUnverifiedOrder(order), nowEpochMs)
             }
@@ -157,6 +160,12 @@ object OpenStopRiskCalculator {
             val status = stop.text("status")?.lowercase(Locale.US)
             stopPrice != null && stopPrice > 0.0 && (status == null || status in activeStatuses || status in stableStopStatuses)
         }
+    }
+
+    private fun isStrictlyUnfilled(order: JsonObject): Boolean {
+        val filled = order.number("filled_qty") ?: return false
+        val quantity = order.number("qty")?.let(::abs) ?: return false
+        return quantity > 0.0 && abs(filled) <= 1e-8
     }
 
     private fun describeUnverifiedOrder(order: JsonObject): String {

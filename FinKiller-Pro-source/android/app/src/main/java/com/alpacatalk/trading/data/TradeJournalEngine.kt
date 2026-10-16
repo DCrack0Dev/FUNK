@@ -17,8 +17,8 @@ import kotlin.math.roundToInt
  *  - A cold setup starts at the neutral 50/100.
  *  - A win adds `0.5 + 0.5 * rating/100` of weight: a win the app expected counts fully, a low-rated
  *    fluke win counts only half as much.
- *  - A loss adds `0.5 + 1.0 * rating/100` of weight: a loss on a setup the app rated highly is
- *    penalised up to three times as hard as a loss on a setup it already distrusted.
+ *  - A loss adds the same conviction-scaled weight as a win: a result cannot drift downward merely
+ *    because the old implementation penalised losses more heavily than it rewarded wins.
  *  - The rating is `100 * (weightedWins + 1) / (weightedWins + weightedLosses + 2)`, i.e. Laplace
  *    smoothed so a single result can never produce a 0 or 100 rating.
  *  - Losses on setups rated [HIGH_RATING_THRESHOLD] or better are additionally counted, and repeated
@@ -37,7 +37,7 @@ object TradeJournalEngine {
     private const val WIN_BASE_WEIGHT = 0.5
     private const val WIN_CONVICTION_WEIGHT = 0.5
     private const val LOSS_BASE_WEIGHT = 0.5
-    private const val LOSS_CONVICTION_WEIGHT = 1.0
+    private const val LOSS_CONVICTION_WEIGHT = 0.5
     private const val SMOOTHING_PRIOR = 1.0
 
     const val SCORE_ADJUSTMENT_PREFER = 6
@@ -163,7 +163,9 @@ object TradeJournalEngine {
     fun rebuild(state: JournalState, excludeManuallyEdited: Boolean = false): JournalSnapshot {
         val trades = state.trades.sortedBy { it.closedAtEpochMs }
         val grouped = LinkedHashMap<String, MutableList<ClosedTrade>>()
-        trades.filterNot { excludeManuallyEdited && it.manuallyEdited }.forEach { trade ->
+        trades.filterNot { excludeManuallyEdited && it.manuallyEdited }
+            .filter { it.source != TradeJournalSource.BROKER_SYNC || it.setupFamily.uppercase(Locale.US) != "OTHER" || it.signalScoreAtEntry != 50 || it.appRatingAtEntry != 50 }
+            .forEach { trade ->
             // Recompute side-aware keys on replay to migrate older short records away from long memory.
             val family = familyForTrade(trade.setupLabel.ifBlank { trade.setupFamily }, trade.side)
             val symbolKey = keyOf(trade.symbol, family)
@@ -446,6 +448,7 @@ object TradeJournalEngine {
             "trade_id", "ticket_id", "closed_at_utc", "symbol", "side", "account", "setup_family", "setup_label", "signal_score",
             "app_rating_at_entry", "memory_rating_before", "memory_rating_after", "directive_after", "directive_at_entry", "entry_price", "stop_price", "target_price", "exit_price",
             "quantity", "stop_pips", "target_pips", "risk_reward", "result_pips", "realized_pnl", "outcome",
+            "stop_distance_price", "target_distance_price", "result_price_move", "result_ticks", "result_unit", "risk_data_valid", "learning_eligible",
             "source", "lesson", "notes",
         ).joinToString(",")
         val rows = trades.sortedByDescending { it.closedAtEpochMs }.map { trade ->
@@ -476,6 +479,13 @@ object TradeJournalEngine {
                 trade.resultPips.toString(),
                 trade.realizedPnl.toString(),
                 trade.outcome.name,
+                TradeMath.formatPrice(kotlin.math.abs(trade.entryPrice - trade.stopPrice)),
+                TradeMath.formatPrice(kotlin.math.abs(trade.targetPrice - trade.entryPrice)),
+                TradeMath.formatPrice(kotlin.math.abs(trade.exitPrice - trade.entryPrice) * if (TradeMath.isShort(trade.side)) -1 else 1),
+                trade.resultPips.toString(),
+                TradeMath.pipLabel(trade.symbol),
+                (TradeMath.validationError(trade.symbol, trade.side, trade.entryPrice, trade.stopPrice, trade.targetPrice) == null).toString(),
+                (trade.source != TradeJournalSource.BROKER_SYNC || trade.setupFamily.uppercase(Locale.US) != "OTHER" || trade.signalScoreAtEntry != 50 || trade.appRatingAtEntry != 50).toString(),
                 trade.source.name,
                 escapeCsv(trade.lesson),
                 escapeCsv(trade.notes),

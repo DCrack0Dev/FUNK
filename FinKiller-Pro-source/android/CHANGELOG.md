@@ -1,5 +1,38 @@
 # Fin Killer Pro source audit — implementation changelog
 
+## Journal data-quality and learning fix (16 October 2026)
+
+- CSV exports now include explicit price-distance, signed price-move, instrument-unit, directional-risk-validity, and learning-eligibility fields. The legacy `*_pips` columns remain for compatibility, but stock values are explicitly labeled as ticks.
+- Neutral broker-only records (`BROKER_SYNC` + `OTHER` + score/rating 50) remain visible in the journal but no longer train setup memory as if they were identified strategies.
+- Win and loss rating weights are now symmetric, preventing a neutral 50/50 result from drifting downward solely because losses previously carried more weight than wins.
+- Scanner candidates with reward/risk above 1:10 are rejected as likely malformed/stale imports, preventing implausible brackets such as 1:59 from entering the learning or execution queue.
+
+## Fresh-quote short-bracket and quantity handling (15 October 2026)
+
+- Valid scanner stop/target distances are now re-anchored to the fresh broker entry quote before submission. This prevents a stale SHORT stop below the new entry, such as `stop=155.51` with `entry=159.61`, while preserving the original directional geometry and R:R.
+- Invalid scanner levels are no longer exposed as executable stop/target fields when no quote-valid candidate exists.
+- Automatic protective-stop repair now re-reads broker position availability after canceling reservations and refuses to submit a stop if the full position quantity is not available, avoiding misleading insufficient-quantity requests.
+
+## Automatic Paper protective-stop repair (15 October 2026)
+
+- Added a guarded Paper-only repair before manual confirmation, background scans, and Submit-all processing. When an open position has no single quantity-covering working stop, the app cancels affected stale stop legs, verifies cancellation, and submits one full-quantity GTC stop at the position's average entry price (break-even).
+- Broker state is refreshed after repair; execution continues only if the new stop is accepted and the position can be freshly verified. Live accounts remain non-mutating in this build.
+- Repair failures remain fail-closed and are surfaced in the developer diagnostics with the repaired symbol, quantity, and stop price.
+
+## Zero-filled pending-order risk preflight fix (15 October 2026)
+
+- An unfilled legacy/simple limit order such as COPX no longer makes every unrelated symbol fail the current-position stop-risk check. Orders with an explicit `filled_qty=0` have no current position stop risk; their remaining notional is still checked by the separate exposure and duplicate-order guards.
+- The same rule applies when a broker returns an incomplete `bracket`/`OTO` response for an order that is still completely unfilled; the app no longer relies on missing child metadata to block unrelated symbols.
+- Partially filled orders, orders with ambiguous fill state, and unprotected positions remain fail-closed until broker protection can be verified.
+- Added regression coverage for zero-filled simple/bracket entries and partially filled unprotected entries.
+
+## 1:1 reward-risk acceptance and quote-valid setup selection (15 October 2026)
+
+- Lowered the shared scanner and opening-bracket minimum from 1.5R to **1.0R**. A 1:1 setup can now qualify when its directional entry, stop, target, market-data, score, memory, Paper-only, and portfolio-risk gates pass.
+- The scanner now prefers the highest-scoring candidate whose preserved stop-loss and take-profit remain valid against the latest quote, reducing false stop-side errors when a different timeframe's stale bracket is selected.
+- Live execution restrictions, fresh-quote validation, risk sizing, exposure limits, and fail-closed stop/target checks remain unchanged.
+- Updated UI diagnostics and regression tests to report and verify the 1:1 boundary.
+
 **Date:** 13 October 2026  
 **Scope:** source-level remediation of the supplied Android project. No broker credentials were used, and no order was submitted.
 

@@ -20,11 +20,13 @@ class TradeRiskPolicyTest {
         assertTrue(error?.contains("target=34.800000") == true)
     }
 
-    @Test fun shortScannerTargetCanBecomeInvalidAfterPriceMovesDownAndIsRejected() {
-        // The scan displayed 34.46 and generated a valid 33.50 target. A later bid of 33.20
-        // would make the preserved target invalid for a new short entry; it must not be rebased.
-        assertEquals(null, TradeGeometry.validationError(false, 34.46, 35.20, 33.50))
-        assertTrue(TradeGeometry.validationError(false, 33.20, 35.20, 33.50)?.contains("take-profit") == true)
+    @Test fun staleShortBracketRebasesToFreshEntryWithoutChangingDistances() {
+        val rebased = TradeGeometry.rebaseBracket(false, 155.51, 157.51, 151.51, 159.61)
+        assertTrue(rebased.first > 159.61)
+        assertTrue(rebased.second < 159.61)
+        assertEquals(2.0, rebased.first - 159.61, 1e-8)
+        assertEquals(4.0, 159.61 - rebased.second, 1e-8)
+        assertEquals(null, TradeGeometry.validationError(false, 159.61, rebased.first, rebased.second))
     }
 
     @Test fun invalidPricesAndBothOpeningDirectionsFailClosed() {
@@ -44,8 +46,8 @@ class TradeRiskPolicyTest {
         assertEquals(2.0, short.rewardRisk, 1e-8)
     }
 
-    @Test fun rewardRiskBoundaryOfOnePointFivePasses() {
-        assertEquals(1.5, TradeGeometry.plan(true, 100.0, 98.0, 103.0, 100_000.0).rewardRisk, 1e-8)
+    @Test fun rewardRiskBoundaryOfOneToOnePasses() {
+        assertEquals(1.0, TradeGeometry.plan(true, 100.0, 98.0, 102.0, 100_000.0).rewardRisk, 1e-8)
     }
 
     @Test fun riskSizingFloorsWholeContractsAndCapsRiskBudget() {
@@ -83,7 +85,7 @@ class TradeRiskPolicyTest {
     @Test fun wrongSideStopsAndTargetsAndLowRewardRiskAreRejected() {
         assertRejected { TradeGeometry.plan(true, 100.0, 101.0, 104.0, 100_000.0) }
         assertRejected { TradeGeometry.plan(false, 100.0, 99.0, 96.0, 100_000.0) }
-        assertRejected { TradeGeometry.plan(true, 100.0, 98.0, 102.9, 100_000.0) }
+        assertRejected { TradeGeometry.plan(true, 100.0, 98.0, 101.9, 100_000.0) }
     }
 
     @Test fun riskBudgetCannotExceedOnePercentAndCannotSizeBelowOne() {
