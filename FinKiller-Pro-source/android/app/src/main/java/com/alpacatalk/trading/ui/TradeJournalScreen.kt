@@ -1,8 +1,6 @@
 package com.alpacatalk.trading.ui
 
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.alpacatalk.trading.DirectTradingState
 import com.alpacatalk.trading.DirectTradingViewModel
+import com.alpacatalk.trading.MainActivity
 import com.alpacatalk.trading.data.ClosedTrade
 import com.alpacatalk.trading.data.JournalSnapshot
 import com.alpacatalk.trading.data.ManualJournalEntry
@@ -88,25 +87,13 @@ fun TradeJournalScreen(state: DirectTradingState, viewModel: DirectTradingViewMo
     var form by remember { mutableStateOf(ManualForm()) }
     val exitInputs = remember { mutableStateMapOf<String, String>() }
     val ratingsByTrade = remember(journal.ratingPoints) { journal.ratingPoints.associateBy { it.tradeId } }
-    val csvExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
-        if (uri != null) runCatching {
-            val output = requireNotNull(context.contentResolver.openOutputStream(uri)) { "Could not open the selected file." }
-            output.writer(Charsets.UTF_8).use { it.write(viewModel.journalCsv()) }
-        }.onSuccess {
-            Toast.makeText(context, "Journal CSV saved", Toast.LENGTH_SHORT).show()
-        }.onFailure { error ->
-            Toast.makeText(context, "CSV export failed: ${error.message ?: "write error"}", Toast.LENGTH_LONG).show()
-        }
-    }
-    val pdfExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/pdf")) { uri ->
-        if (uri != null) runCatching {
-            val bytes = JournalPdfExporter.render(journal)
-            val output = requireNotNull(context.contentResolver.openOutputStream(uri)) { "Could not open the selected file." }
-            output.use { it.write(bytes) }
-        }.onSuccess {
-            Toast.makeText(context, "Journal PDF saved", Toast.LENGTH_SHORT).show()
-        }.onFailure { error ->
-            Toast.makeText(context, "PDF export failed: ${error.message ?: "write error"}", Toast.LENGTH_LONG).show()
+    fun launchExport(mimeType: String, filename: String, bytes: ByteArray) {
+        val activity = context as? MainActivity
+        if (activity == null) {
+            Toast.makeText(context, "Journal export is unavailable outside the main activity.", Toast.LENGTH_LONG).show()
+        } else {
+            runCatching { activity.launchJournalExport(mimeType, filename, bytes) }
+                .onFailure { error -> Toast.makeText(context, "Could not open the save dialog: ${error.message ?: "try again"}", Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -141,16 +128,14 @@ fun TradeJournalScreen(state: DirectTradingState, viewModel: DirectTradingViewMo
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = {
-                        runCatching { csvExporter.launch("fin-killer-trade-journal.csv") }
-                            .onFailure { Toast.makeText(context, "Could not open the CSV save dialog: ${it.message ?: "try again"}", Toast.LENGTH_LONG).show() }
+                        launchExport("text/csv", "fin-killer-trade-journal.csv", viewModel.journalCsv().toByteArray(Charsets.UTF_8))
                     },
                     enabled = journal.trades.isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) { Text("Save CSV") }
                 OutlinedButton(
                     onClick = {
-                        runCatching { pdfExporter.launch("fin-killer-trade-journal.pdf") }
-                            .onFailure { Toast.makeText(context, "Could not open the PDF save dialog: ${it.message ?: "try again"}", Toast.LENGTH_LONG).show() }
+                        launchExport("application/pdf", "fin-killer-trade-journal.pdf", JournalPdfExporter.render(journal))
                     },
                     enabled = journal.trades.isNotEmpty() || journal.openTickets.isNotEmpty(),
                     modifier = Modifier.weight(1f),

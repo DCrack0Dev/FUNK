@@ -1,5 +1,11 @@
 # Fin Killer Pro source audit — implementation changelog
 
+## Journal export request-code workaround (16 October 2026)
+
+- Replaced the Compose `rememberLauncherForActivityResult(CreateDocument)` path with a direct Android document intent handled by `MainActivity`.
+- CSV and PDF exports now use fixed request code `0x4A31`, explicitly masked to the lower 16 bits, and write the prepared bytes after the save dialog returns.
+- This bypasses the AndroidX ActivityResultRegistry path that continued to trigger the device error about request codes being limited to the lower 16 bits.
+
 ## Stricter swing setup confirmation (16 October 2026)
 
 - Swing candidates now require aligned direction on both the 1-hour and 1-day analyses, plus a breakout/liquidity event and valid R:R. A single higher-timeframe signal can no longer qualify an execution setup by itself.
